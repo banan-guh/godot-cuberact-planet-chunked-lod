@@ -9,6 +9,10 @@
 class_name Planet
 extends Node3D
 
+
+var debug_no_change_visible: int = 0
+var debug_changed_visible: int = 0
+
 # ===========================================================================
 #  Configuration (@export — visible in the Godot inspector)
 # ===========================================================================
@@ -264,8 +268,13 @@ func update(cam: PlanetCamera) -> void:
 ## Acquire a chunk from the pool (creates one if pool is empty).
 ## Returns a ready-to-use Chunk instance (still needs build_mesh called).
 func _acquire_chunk() -> Chunk:
-	if _free_chunks.is_empty():
-		_create_pool_chunk()
+	for i in range(_free_chunks.size() - 1, -1, -1):
+		if not _free_chunks[i].is_building:
+			var c = _free_chunks.pop_at(i)
+			if c.owner_quad != null:
+				print("DIRTY CHUNK - acquired chunk still has owner_quad")
+			return c
+	_create_pool_chunk()
 	return _free_chunks.pop_back()
 
 ## Release a chunk back to the pool. Hides it immediately.

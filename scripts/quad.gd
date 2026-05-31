@@ -23,6 +23,10 @@ const FRUSTUM_OUTSIDE: int = 0   ## Entirely outside the view — don't render
 const FRUSTUM_INTERSECT: int = 1 ## Partially inside — test children individually
 const FRUSTUM_INSIDE: int = 2    ## Fully inside — skip frustum test for children
 
+# Cache hits / misses - remove if done debugging!
+static var frustum_test_count: int = 0
+static var frustum_cache_hit: int = 0
+
 # ===========================================================================
 #  Tree structure
 # ===========================================================================
@@ -47,6 +51,10 @@ var horizon_sin_alpha: float
 
 ## Current frustum test result for this node (see FRUSTUM_* constants above).
 var frustum_state: int = FRUSTUM_INTERSECT
+
+# Pending var
+var is_pending: bool = true
+
 # ===========================================================================
 #  Initialization
 # ===========================================================================
@@ -58,10 +66,15 @@ func _init(planet_ref: Planet) -> void:
 
 func init_as_root_quad(corners: Array[Vector3]) -> void:
 	chunk = planet._acquire_chunk()
-	chunk.build_full_mesh(corners)
+	chunk.owner_quad = self
+	chunk.is_building = true
+	#chunk.build_full_mesh(corners)
+	WorkerThreadPool.add_task(chunk.build_full_mesh.bind(corners))
 	_copy_bounds_from_chunk()
 
 func init_as_child_quad(parent_quad: Quad, quadrant: int) -> void:
+	if chunk != null:
+		print("DOUBLE INIT - quad already has chunk at level ", level)
 	if parent_quad == null:
 		push_warning("parameter parent_quad can not be null.")
 		return
@@ -71,7 +84,10 @@ func init_as_child_quad(parent_quad: Quad, quadrant: int) -> void:
 	parent = parent_quad
 	level = parent_quad.level + 1
 	chunk = planet._acquire_chunk()
-	chunk.build_mesh_from_parent(parent_quad.chunk, quadrant)
+	chunk.owner_quad = self
+	chunk.is_building = true
+	#chunk.build_mesh_from_parent(parent_quad.chunk, quadrant)
+	WorkerThreadPool.add_task(chunk.build_mesh_from_parent.bind(parent_quad.chunk, quadrant))
 	_copy_bounds_from_chunk()
 
 func _copy_bounds_from_chunk() -> void:
@@ -92,6 +108,8 @@ func _copy_bounds_from_chunk() -> void:
 ## so all recursive calls share one counter. This limits expensive splits per
 ## frame (merges are cheap — no limit needed).
 func update(camera_pos: Vector3, frustum_planes: Array, split_budget: Array[int]) -> void:
+	if is_pending:
+		return
 	# --- Culling: is this quad visible from the camera? ---
 	var is_visible: bool
 	if not planet.culling_enabled:
@@ -130,6 +148,23 @@ func update(camera_pos: Vector3, frustum_planes: Array, split_budget: Array[int]
 		else:
 			_set_chunk_visible(is_visible)
 
+func _on_child_ready() -> void:
+	for child in children:
+		if child.is_pending:
+			return
+	_release_chunk()
+	_propagate_aabb_up()
+
+func on_chunk_ready() -> void:
+	for child in _merge_children:
+		child._release_chunk()
+	_merge_children.clear()
+	_copy_bounds_from_chunk()
+	is_pending = false
+	if parent:
+		parent._on_child_ready()
+	_set_chunk_visible(true)
+
 ## Lightweight update for nodes known to be invisible.
 ## Skips culling and split decisions — only hides leaves and allows merges.
 func _update_hidden(camera_pos: Vector3) -> void:
@@ -158,26 +193,29 @@ func _split() -> void:
 	for quadrant in range(4):
 		children[quadrant] = Quad.new(planet)
 		children[quadrant].init_as_child_quad(self, quadrant)
-	_release_chunk()
+	#_release_chunk() - dont release here anymore
 	# Propagate AABB up the tree — child AABBs can extend beyond parent's
 	# sampled AABB due to sphere curvature between sample points.
 	_propagate_aabb_up()
 
+var _merge_children: Array[Quad] = []
 ## Merge 4 children back into one leaf (lower detail).
 func _merge() -> void:
 	# IMPORTANT: Build parent mesh BEFORE releasing children — same LIFO
 	# pool reason as in _split() above.
 	chunk = planet._acquire_chunk()
-	chunk.build_mesh_from_children(
-		children[0].chunk, children[1].chunk,
-		children[2].chunk, children[3].chunk)
+	chunk.owner_quad = self
+	chunk.is_building = true
+	#chunk.build_mesh_from_children(
+	#	children[0].chunk, children[1].chunk,
+	#	children[2].chunk, children[3].chunk)
+	WorkerThreadPool.add_task(chunk.build_mesh_from_children.bind(children[0].chunk, children[1].chunk, children[2].chunk, children[3].chunk))
 	bounding_center = chunk.bounding_center
 	bounding_radius = chunk.bounding_radius
 	bounding_aabb = chunk.bounding_aabb
 	horizon_cos_alpha = chunk.horizon_cos_alpha
 	horizon_sin_alpha = chunk.horizon_sin_alpha
-	for child in children:
-		child._release_chunk()
+	_merge_children = children.duplicate()
 	children.clear()
 
 ## Recompute this node's AABB from children and propagate up to root.
@@ -207,17 +245,21 @@ func destroy() -> void:
 ## Return the chunk to the pool and clear the reference.
 func _release_chunk() -> void:
 	if chunk != null:
+		chunk.owner_quad = null
 		_set_chunk_visible(false)
 		planet._release_chunk(chunk)
 		chunk = null
 
 ## Show or hide this node's chunk mesh.
 func _set_chunk_visible(show: bool) -> void:
-	if chunk != null:
-		if chunk.is_shown != show:
-			planet.visible_chunk_count += 1 if show else -1
-		chunk.visible = show
-		chunk.is_shown = show
+	if chunk == null: return
+	if chunk.is_shown == show:
+		planet.debug_no_change_visible += 1
+		return
+	planet.debug_changed_visible += 1
+	planet.visible_chunk_count += 1 if show else -1
+	chunk.visible = show
+	chunk.is_shown = show
 
 # ===========================================================================
 #  LOD distance helpers

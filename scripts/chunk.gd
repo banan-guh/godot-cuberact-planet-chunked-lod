@@ -65,6 +65,11 @@ var horizon_sin_alpha: float
 const SKIRT_DEPTH_FRACTION: float = 0.15
 
 var is_shown = false
+
+var owner_quad: Quad = null
+
+var is_building: bool = false
+
 # ===========================================================================
 #  Shared index buffer initialization
 # ===========================================================================
@@ -143,6 +148,8 @@ func build_full_mesh(new_corners: Array[Vector3]) -> void:
 
 ## Build by splitting from a parent chunk (optimization).
 func build_mesh_from_parent(parent_chunk: Chunk, quadrant: int) -> void:
+	if parent_chunk.is_building:
+		print("RACE - reading from parent chunk that is still building")
 	var pc := parent_chunk.corners  # pc[0]=TL, pc[1]=TR, pc[2]=BR, pc[3]=BL
 	match quadrant:
 		0: # Top-left quadrant
@@ -246,7 +253,7 @@ func _finalize_mesh() -> void:
 	var corner_br: Vector3 = _sphere_positions[edge + edge * v_count]
 	var center: Vector3 = (corner_tl + corner_br) * 0.5
 	bounding_center = center
-	position = center
+	#position = center
 	bounding_radius = center.distance_to(corner_tl)
 	# Horizon culling data from the two most extreme vertices
 	var chunk_dir: Vector3 = center.normalized()
@@ -288,12 +295,18 @@ func _finalize_mesh() -> void:
 		_uv2[i] = uv2_value
 	# --- Skirt ---
 	var skirt_depth: float = bounding_radius * SKIRT_DEPTH_FRACTION
-	_build_skirt(v_count, planet.grid_size, skirt_depth)
-	_upload_to_array_mesh()
-	visible = true
+	_build_skirt(v_count, planet.grid_size, skirt_depth, center)
+	#_upload_to_array_mesh()
+	call_deferred("_upload_to_array_mesh")
 
+static var _uploading: Dictionary = {}
 ## Upload current scratch buffers to the ArrayMesh for rendering.
 func _upload_to_array_mesh() -> void:
+	var id = get_instance_id()
+	if id in _uploading:
+		print("DUPLICATE UPLOAD chunk: ", id)
+	_uploading[id] = true
+	position = bounding_center
 	var arr_mesh: ArrayMesh = mesh as ArrayMesh
 	if arr_mesh == null:
 		arr_mesh = ArrayMesh.new()
@@ -311,6 +324,10 @@ func _upload_to_array_mesh() -> void:
 	# Use planet-wide AABB to disable Godot's built-in frustum culling.
 	# We handle culling ourselves in quad.gd via chunk.visible flag.
 	custom_aabb = planet.chunk_custom_aabb
+	is_building = false
+	if owner_quad:
+		owner_quad.on_chunk_ready()
+	_uploading.erase(id)
 
 # ===========================================================================
 #  Skirt helpers
@@ -318,23 +335,23 @@ func _upload_to_array_mesh() -> void:
 
 ## Build skirt vertices: duplicate each edge vertex, pushed toward planet center.
 ## Edge order: top, right, bottom, left (matching skirt index buffer).
-func _build_skirt(v_count: int, edge: int, skirt_depth: float) -> void:
+func _build_skirt(v_count: int, edge: int, skirt_depth: float, center: Vector3) -> void:
 	var grid_vertex_count: int = v_count * v_count
 	var idx: int = grid_vertex_count
 	for x in range(v_count):                                        # Top edge (y=0)
-		idx = _write_skirt_vertex(idx, x, skirt_depth)
+		idx = _write_skirt_vertex(idx, x, skirt_depth, center)
 	for y in range(v_count):                                        # Right edge (x=edge)
-		idx = _write_skirt_vertex(idx, edge + y * v_count, skirt_depth)
+		idx = _write_skirt_vertex(idx, edge + y * v_count, skirt_depth, center)
 	for x in range(v_count):                                        # Bottom edge (y=edge, reversed)
-		idx = _write_skirt_vertex(idx, (edge - x) + edge * v_count, skirt_depth)
+		idx = _write_skirt_vertex(idx, (edge - x) + edge * v_count, skirt_depth, center)
 	for y in range(v_count):                                        # Left edge (x=0, reversed)
-		idx = _write_skirt_vertex(idx, 0 + (edge - y) * v_count, skirt_depth)
+		idx = _write_skirt_vertex(idx, 0 + (edge - y) * v_count, skirt_depth, center)
 
 ## Write one skirt vertex — flagged with alpha 0.0 so shader skips displacement.
-func _write_skirt_vertex(idx: int, grid_index: int, skirt_depth: float) -> int:
+func _write_skirt_vertex(idx: int, grid_index: int, skirt_depth: float, center: Vector3) -> int:
 	var sphere_vertex: Vector3 = _sphere_positions[grid_index]
 	var lowered: Vector3 = sphere_vertex - sphere_vertex.normalized() * skirt_depth
-	_local_positions[idx] = lowered - position
+	_local_positions[idx] = lowered - center
 	_normals[idx] = _normals[grid_index]
 	# Alpha 0.0 flags this as a skirt vertex — shader won't displace it
 	var color: Color = _colors[grid_index]
