@@ -1,9 +1,12 @@
 [gd_scene format=3 uid="uid://c7d7b5bg272a6"]
 
+[ext_resource type="Script" uid="uid://cm36y7ykyp7m2" path="res://scripts/player.gd" id="2_1bvp3"]
 [ext_resource type="Texture2D" uid="uid://bkyao1xvrncdb" path="res://textures/stars.jpg" id="4_1bvp3"]
+[ext_resource type="Script" uid="uid://b6d41b17ufynt" path="res://scripts/planet_physics.gd" id="4_lquwl"]
 [ext_resource type="Script" uid="uid://c7b4hn1r8jtr5" path="res://scripts/planet.gd" id="5_planet"]
 [ext_resource type="Script" uid="uid://c0hwtu5jppxa1" path="res://scripts/planet_camera.gd" id="6_planet_camera"]
-[ext_resource type="Script" uid="uid://q6ynhcax0wu5" path="res://scripts/example.gd" id="7_example"]
+
+[sub_resource type="CapsuleShape3D" id="CapsuleShape3D_lquwl"]
 
 [sub_resource type="PanoramaSkyMaterial" id="PanoramaSkyMaterial_lquwl"]
 panorama = ExtResource("4_1bvp3")
@@ -26,22 +29,32 @@ script = ExtResource("5_planet")
 grid_size = 8
 metadata/_custom_type_script = "uid://c7b4hn1r8jtr5"
 
-[node name="Example" type="Node" parent="." unique_id=1306506341 node_paths=PackedStringArray("planet_camera", "planet", "yaw_node", "_world_env")]
-script = ExtResource("7_example")
+[node name="Example" type="CharacterBody3D" parent="." unique_id=1725820977 node_paths=PackedStringArray("planet_camera", "yaw_node", "planet_physics", "planet")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 6388500)
+script = ExtResource("2_1bvp3")
 planet_camera = NodePath("YawNode/PlanetCamera")
-planet = NodePath("../Planet")
 yaw_node = NodePath("YawNode")
-_world_env = NodePath("../WorldEnvironment")
+move_speed = 100.0
+planet_physics = NodePath("PlanetPhysics")
+planet = NodePath("../Planet")
 
 [node name="YawNode" type="Node3D" parent="Example" unique_id=1631050656]
 
 [node name="PlanetCamera" type="Camera3D" parent="Example/YawNode" unique_id=2089533179 node_paths=PackedStringArray("planet", "yaw_node")]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 16000)
 near = 1.0
 far = 100000.0
 script = ExtResource("6_planet_camera")
 planet = NodePath("../../../Planet")
 yaw_node = NodePath("..")
+
+[node name="PlanetPhysics" type="Node" parent="Example" unique_id=1578776175 node_paths=PackedStringArray("planet")]
+script = ExtResource("4_lquwl")
+planet = NodePath("../../Planet")
+metadata/_custom_type_script = "uid://b6d41b17ufynt"
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Example" unique_id=1037789368]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -0.59264064, 0)
+shape = SubResource("CapsuleShape3D_lquwl")
 
 [node name="WorldEnvironment" type="WorldEnvironment" parent="." unique_id=2039396142]
 environment = SubResource("Environment_272bh")

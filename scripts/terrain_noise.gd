@@ -30,12 +30,14 @@ var micro_strength: float = 0.0011
 ## Internally maps to a radius-100 sphere where the noise is tuned.
 func compute_noise(direction: Vector3) -> float:
 	var pos := direction.normalized() * 100.0 # Fixed radius — noise was tuned at this scale
+	var buf := PackedByteArray()
+	buf.resize(4)
 	# Layer 1: Continental shapes
 	var continental := 0.0
 	if continental_enabled:
-		var large := _noise3d(pos * continental_large_scale)
+		var large := _noise3d(pos * continental_large_scale, buf)
 		# + Vector3(...) offsets decorrelate noise samples from each other
-		var medium := _noise3d(pos * continental_medium_scale + Vector3(31.7, 47.3, 19.1))
+		var medium := _noise3d(pos * continental_medium_scale + Vector3(31.7, 47.3, 19.1), buf)
 		continental = large * continental_large_weight + medium * (1.0 - continental_large_weight)
 	var ocean_floor := 0.05
 	var land_mask := smoothstep(-coast_width, coast_width, continental - sea_level)
@@ -44,16 +46,16 @@ func compute_noise(direction: Vector3) -> float:
 	# Layer 2: Mountains
 	var mountains := 0.0
 	if mountains_enabled:
-		mountains = _ridged_noise(pos * mountain_scale + Vector3(50.0, 30.0, 70.0), mountain_octaves)
+		mountains = _ridged_noise(pos * mountain_scale + Vector3(50.0, 30.0, 70.0), mountain_octaves, buf)
 		mountains = pow(mountains, mountain_sharpness)
 	# Layer 3: Detail
 	var detail := 0.0
 	if detail_enabled:
-		detail = _fbm(pos * detail_scale + Vector3(100.0, 200.0, 300.0), detail_octaves)
+		detail = _fbm(pos * detail_scale + Vector3(100.0, 200.0, 300.0), detail_octaves, buf)
 	# Layer 4: Micro — single noise call, tiny bumps
 	var micro := 0.0
 	if micro_enabled:
-		micro = _noise3d(pos * micro_scale + Vector3(77.7, 55.5, 33.3))
+		micro = _noise3d(pos * micro_scale + Vector3(77.7, 55.5, 33.3), buf)
 	# Land height: normalize to ocean_floor..1.0
 	var raw_land_elevation := inland_factor * 0.15 \
 		+ mountains * mountain_height * inland_factor \
@@ -101,24 +103,20 @@ static func _ihash(n: int) -> int:
 	return n
 
 ## floatBitsToUint equivalent — reinterpret float32 bits as uint32.
-static func _float_bits_to_uint(v: float) -> int:
-	var buf := PackedByteArray()
-	buf.resize(4)
+static func _float_bits_to_uint(v: float, buf: PackedByteArray) -> int:
 	buf.encode_float(0, v)
 	return buf.decode_u32(0)
 
 ## Truncate double to float32 to match GLSL precision.
-static func _to_f32(v: float) -> float:
-	var buf := PackedByteArray()
-	buf.resize(4)
+static func _to_f32(v: float, buf: PackedByteArray) -> float:
 	buf.encode_float(0, v)
 	return buf.decode_float(0)
 
-func _hash3(p: Vector3) -> Vector3:
+func _hash3(p: Vector3, buf: PackedByteArray) -> Vector3:
 	# Truncate to float32 to match GLSL float precision
-	var ipx := _float_bits_to_uint(_to_f32(p.x))
-	var ipy := _float_bits_to_uint(_to_f32(p.y))
-	var ipz := _float_bits_to_uint(_to_f32(p.z))
+	var ipx := _float_bits_to_uint(_to_f32(p.x, buf), buf)
+	var ipy := _float_bits_to_uint(_to_f32(p.y, buf), buf)
+	var ipz := _float_bits_to_uint(_to_f32(p.z, buf), buf)
 	# Chain hashes — identical to shader
 	var hx := _ihash(ipx + _ihash(ipy + _ihash(ipz)))
 	var hy := _ihash(hx + 1)
@@ -130,9 +128,9 @@ func _hash3(p: Vector3) -> Vector3:
 		float(hz) / 2147483647.0 - 1.0
 	)
 
-func _noise3d(p: Vector3) -> float:
+func _noise3d(p: Vector3, buf: PackedByteArray) -> float:
 	# Truncate to float32 to match GLSL precision throughout
-	p = Vector3(_to_f32(p.x), _to_f32(p.y), _to_f32(p.z))
+	p = Vector3(_to_f32(p.x, buf), _to_f32(p.y, buf), _to_f32(p.z, buf))
 	var i := Vector3(floor(p.x), floor(p.y), floor(p.z))
 	var f := Vector3(p.x - i.x, p.y - i.y, p.z - i.z)
 	# Smoothstep: u = f * f * (3 - 2*f)
@@ -141,39 +139,39 @@ func _noise3d(p: Vector3) -> float:
 		f.y * f.y * (3.0 - 2.0 * f.y),
 		f.z * f.z * (3.0 - 2.0 * f.z)
 	)
-	var c000 := _hash3(i).dot(f)
-	var c100 := _hash3(i + Vector3(1,0,0)).dot(f - Vector3(1,0,0))
-	var c010 := _hash3(i + Vector3(0,1,0)).dot(f - Vector3(0,1,0))
-	var c110 := _hash3(i + Vector3(1,1,0)).dot(f - Vector3(1,1,0))
-	var c001 := _hash3(i + Vector3(0,0,1)).dot(f - Vector3(0,0,1))
-	var c101 := _hash3(i + Vector3(1,0,1)).dot(f - Vector3(1,0,1))
-	var c011 := _hash3(i + Vector3(0,1,1)).dot(f - Vector3(0,1,1))
-	var c111 := _hash3(i + Vector3(1,1,1)).dot(f - Vector3(1,1,1))
+	var c000 := _hash3(i, buf).dot(f)
+	var c100 := _hash3(i + Vector3(1,0,0), buf).dot(f - Vector3(1,0,0))
+	var c010 := _hash3(i + Vector3(0,1,0), buf).dot(f - Vector3(0,1,0))
+	var c110 := _hash3(i + Vector3(1,1,0), buf).dot(f - Vector3(1,1,0))
+	var c001 := _hash3(i + Vector3(0,0,1), buf).dot(f - Vector3(0,0,1))
+	var c101 := _hash3(i + Vector3(1,0,1), buf).dot(f - Vector3(1,0,1))
+	var c011 := _hash3(i + Vector3(0,1,1), buf).dot(f - Vector3(0,1,1))
+	var c111 := _hash3(i + Vector3(1,1,1), buf).dot(f - Vector3(1,1,1))
 	return lerpf(
 		lerpf(lerpf(c000, c100, u.x), lerpf(c010, c110, u.x), u.y),
 		lerpf(lerpf(c001, c101, u.x), lerpf(c011, c111, u.x), u.y),
 		u.z
 	)
 
-func _fbm(p: Vector3, octaves: int) -> float:
+func _fbm(p: Vector3, octaves: int, buf: PackedByteArray) -> float:
 	var value := 0.0
 	var amp := 1.0
 	var freq := 1.0
 	var max_amp := 0.0
 	for _octave in range(octaves):
-		value += amp * _noise3d(p * freq)
+		value += amp * _noise3d(p * freq, buf)
 		max_amp += amp
 		freq *= 2.0
 		amp *= 0.5
 	return value / max_amp
 
-func _ridged_noise(p: Vector3, octaves: int) -> float:
+func _ridged_noise(p: Vector3, octaves: int, buf: PackedByteArray) -> float:
 	var value := 0.0
 	var amp := 1.0
 	var freq := 1.0
 	var max_amp := 0.0
 	for _octave in range(octaves):
-		var n := 1.0 - absf(_noise3d(p * freq)) # Invert abs(noise) to create ridges
+		var n := 1.0 - absf(_noise3d(p * freq, buf)) # Invert abs(noise) to create ridges
 		value += amp * n
 		max_amp += amp
 		freq *= 2.0

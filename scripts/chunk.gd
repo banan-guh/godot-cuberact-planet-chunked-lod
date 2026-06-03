@@ -70,6 +70,10 @@ var owner_quad: Quad = null
 
 var is_building: bool = false
 
+# vars for collider building
+var _cached_heights: PackedFloat32Array   ## Radial height (radius + displacement) per grid vertex. Filled during build, used for terrain queries and collision.
+var _collision_body: StaticBody3D = null  ## Only exists on LOD 15 chunks.
+
 # ===========================================================================
 #  Shared index buffer initialization
 # ===========================================================================
@@ -149,7 +153,7 @@ func build_full_mesh(new_corners: Array[Vector3]) -> void:
 ## Build by splitting from a parent chunk (optimization).
 func build_mesh_from_parent(parent_chunk: Chunk, quadrant: int) -> void:
 	if parent_chunk.is_building:
-		print("RACE - reading from parent chunk that is still building")
+		("RACE - reading from parent chunk that is still building")
 	var pc := parent_chunk.corners  # pc[0]=TL, pc[1]=TR, pc[2]=BR, pc[3]=BL
 	match quadrant:
 		0: # Top-left quadrant
@@ -236,6 +240,7 @@ func setup(p: Planet) -> void:
 	_normals.resize(total_vertex_count)
 	_colors.resize(total_vertex_count)
 	_uv2.resize(total_vertex_count)
+	_cached_heights.resize(grid_vertex_count)
 
 # ===========================================================================
 #  Internals: finalization pipeline
@@ -289,7 +294,9 @@ func _finalize_mesh() -> void:
 	var uv2_value := Vector2(corner_tl.distance_to(corner_tr) * noise_coeff / planet.grid_size, 0.0)
 	for i in range(grid_vertex_count):
 		var sphere_vertex: Vector3 = _sphere_positions[i]
-		_local_positions[i] = sphere_vertex - center
+		var noise_val: float = planet.terrain_noise.compute_noise(sphere_vertex)
+		_cached_heights[i] = planet.radius + noise_val * planet.terrain_height
+		_local_positions[i] = sphere_vertex - center  # undisplaced — shader displaces at render time
 		_normals[i] = sphere_vertex.normalized()
 		_colors[i] = simple_color
 		_uv2[i] = uv2_value
@@ -321,9 +328,14 @@ func _upload_to_array_mesh() -> void:
 	arrays[Mesh.ARRAY_TEX_UV2] = _uv2
 	arrays[Mesh.ARRAY_INDEX] = _shared_indices
 	arr_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	# Collision: reuse the visual mesh, no extra noise calls needed.
+	# Only grid triangles, not skirt (skirt has alpha=0 and goes inward anyway).
+	
 	# Use planet-wide AABB to disable Godot's built-in frustum culling.
 	# We handle culling ourselves in quad.gd via chunk.visible flag.
 	custom_aabb = planet.chunk_custom_aabb
+	if owner_quad != null and owner_quad.level >= 15:
+		_build_collision_shape()
 	is_building = false
 	if owner_quad:
 		owner_quad.on_chunk_ready()
@@ -383,3 +395,64 @@ func _spherify(v: Vector3) -> Vector3:
 	var ny: float = v.y * sqrt(maxf(0.0, 1.0 - z2 * 0.5 - x2 * 0.5 + z2 * x2 / 3.0))
 	var nz: float = v.z * sqrt(maxf(0.0, 1.0 - x2 * 0.5 - y2 * 0.5 + x2 * y2 / 3.0))
 	return Vector3(nx * planet.radius, ny * planet.radius, nz * planet.radius)
+
+# ---------------------------------------------------------------------------
+#  Collision
+# ---------------------------------------------------------------------------
+ 
+## Build a ConcavePolygonShape3D from CPU-displaced vertex data.
+## Only called for LOD 15 chunks. Runs on main thread (called from
+## _upload_to_array_mesh which is already deferred).
+func _build_collision_shape() -> void:
+	var v_count := planet.grid_size + 1
+	var grid_tri_count := planet.grid_size * planet.grid_size * 2
+	# Build displaced face soup.
+	# _sphere_positions are on the ideal sphere. Scale each by its cached
+	# radial height to get the displaced position, then make chunk-local.
+	var faces := PackedVector3Array()
+	faces.resize(grid_tri_count * 3)
+	var fi := 0
+	for ti in range(0, grid_tri_count * 3, 3):
+		var i0 := _shared_indices[ti]
+		var i1 := _shared_indices[ti + 1]
+		var i2 := _shared_indices[ti + 2]
+		faces[fi]     = _sphere_positions[i0].normalized() * _cached_heights[i0] - bounding_center
+		faces[fi + 1] = _sphere_positions[i1].normalized() * _cached_heights[i1] - bounding_center
+		faces[fi + 2] = _sphere_positions[i2].normalized() * _cached_heights[i2] - bounding_center
+		fi += 3
+	var shape := ConcavePolygonShape3D.new()
+	shape.set_faces(faces)
+	if _collision_body == null:
+		_collision_body = StaticBody3D.new()
+		var col := CollisionShape3D.new()
+		_collision_body.add_child(col)
+		planet._chunk_pool_node.add_child(_collision_body)
+	(_collision_body.get_child(0) as CollisionShape3D).shape = shape
+	_collision_body.position = bounding_center  # chunk pool node is at planet origin, so this is planet-local
+ 
+## Release the collision body back to the scene. Called by Planet._release_chunk().
+func clear_collision() -> void:
+	if _collision_body != null:
+		_collision_body.queue_free()
+		_collision_body = null
+ 
+# ---------------------------------------------------------------------------
+#  Terrain query
+# ---------------------------------------------------------------------------
+ 
+## Return terrain height above planet.radius for a given world-space direction.
+## Nearest-vertex lookup — zero noise calls. Fast enough for per-frame queries.
+## Only call this on chunks that have finished building (_cached_heights populated).
+func sample_height(world_dir: Vector3) -> float:
+	var v_count := planet.grid_size + 1
+	var best_dot := -INF
+	var best_idx := 0
+	# All _sphere_positions share the same radius so dot product = cos(angle) * r.
+	# Max dot product = closest direction to world_dir.
+	for i in range(v_count * v_count):
+		var d := _sphere_positions[i].dot(world_dir)
+		if d > best_dot:
+			best_dot = d
+			best_idx = i
+	return _cached_heights[best_idx] - planet.radius
+ 

@@ -68,6 +68,7 @@ func init_as_root_quad(corners: Array[Vector3]) -> void:
 	chunk = planet._acquire_chunk()
 	chunk.owner_quad = self
 	chunk.is_building = true
+	is_pending = true
 	#chunk.build_full_mesh(corners)
 	WorkerThreadPool.add_task(chunk.build_full_mesh.bind(corners))
 	_copy_bounds_from_chunk()
@@ -86,6 +87,7 @@ func init_as_child_quad(parent_quad: Quad, quadrant: int) -> void:
 	chunk = planet._acquire_chunk()
 	chunk.owner_quad = self
 	chunk.is_building = true
+	is_pending = true
 	#chunk.build_mesh_from_parent(parent_quad.chunk, quadrant)
 	WorkerThreadPool.add_task(chunk.build_mesh_from_parent.bind(parent_quad.chunk, quadrant))
 	_copy_bounds_from_chunk()
@@ -149,6 +151,7 @@ func update(camera_pos: Vector3, frustum_planes: Array, split_budget: Array[int]
 			_set_chunk_visible(is_visible)
 
 func _on_child_ready() -> void:
+	if children.is_empty(): return
 	for child in children:
 		if child.is_pending:
 			return
@@ -185,6 +188,7 @@ func _update_hidden(camera_pos: Vector3) -> void:
 ## Split this leaf into 4 children (higher detail).
 ## Computes the 4 child corner sets from edge midpoints of the current chunk.
 func _split() -> void:
+	is_pending = true
 	# IMPORTANT: Create all children BEFORE releasing the parent chunk.
 	# Children read from parent's _sphere_positions buffer. The pool is LIFO,
 	# so releasing first would hand back the same Chunk instance to a child,
@@ -203,6 +207,7 @@ var _merge_children: Array[Quad] = []
 func _merge() -> void:
 	# IMPORTANT: Build parent mesh BEFORE releasing children — same LIFO
 	# pool reason as in _split() above.
+	is_pending = true
 	chunk = planet._acquire_chunk()
 	chunk.owner_quad = self
 	chunk.is_building = true
@@ -287,6 +292,8 @@ func _should_merge(camera_pos: Vector3) -> bool:
 	if level >= planet.merge_distance_sq.size():
 		return true  # beyond current threshold array — merge back
 	for child in children:
+		if child.is_pending:
+			return false  # Don't merge while children are still building!
 		if not child.children.is_empty():
 			return false  # has grandchildren — can't merge yet
 	return _nearest_distance_sq(camera_pos) > planet.merge_distance_sq[level]

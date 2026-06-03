@@ -36,14 +36,8 @@ var mouse_sensitivity: float = 0.005
 #  Sun (visual decoration + orbiting light direction)
 # ===========================================================================
 
-var _sun_mesh: MeshInstance3D
-var _sun_angle: float = PI * 0.5 + deg_to_rad(30.0)
-var _sun_target_offset: float = 0.0  # accumulated manual offset, lerped into _sun_angle
-var _sun_start_angle: float = PI * 0.5 + deg_to_rad(30.0)
-var sun_orbit_period: float = 1200.0
-var sun_distance: float = 20000.0
+# worldenv node just to replace everything else
 @export var _world_env: WorldEnvironment
-var sun_radius: float = 200.0
 
 
 var _initial_rel_pos: Vector3
@@ -59,7 +53,6 @@ func _ready() -> void:
 		_setup_start_view()
 		_initial_rel_pos = planet_camera.global_position - planet.global_position
 		_initial_basis = planet_camera.global_transform.basis
-	_create_sun()
 
 
 # ===========================================================================
@@ -113,47 +106,14 @@ func _process(delta: float) -> void:
 	if Input.is_key_pressed(KEY_E):
 		planet_camera.rotate_object_local(Vector3.FORWARD, 2.0 * delta)
 
-	# O/P = time of day (hold to rotate sun continuously)
-	if Input.is_key_pressed(KEY_O):
-		_sun_angle -= (TAU / 96.0) * delta * 5.0
-	if Input.is_key_pressed(KEY_P):
-		_sun_angle += (TAU / 96.0) * delta * 5.0
-
 	# Auto speed based on distance from ideal sphere (ignoring terrain to avoid
 	# speed jitter over mountains). Works above and inside the planet.
 	var surface_dist := absf((planet_camera.global_position - planet.global_position).length() - planet.radius)
 	speed = maxf(clampf(surface_dist * 0.5, 0.5, 50000.0), 0.05)
 
-	if direction.length_squared() > 0.0:
-		var offset := direction.normalized() * speed * delta
-		planet_camera.move(offset, _collision_on)
-
-	# Orbit the sun and update planet's light direction
-	if planet and _sun_mesh and sun_orbit_period > 0.0:
-		# Smoothly apply manual time offset (from +/- buttons)
-		if absf(_sun_target_offset) > 0.001:
-			var step := _sun_target_offset * minf(5.0 * delta, 1.0)
-			_sun_angle += step
-			_sun_target_offset -= step
-		_sun_angle += (TAU / sun_orbit_period) * delta
-		_sun_angle = fmod(_sun_angle, TAU)
-		# Compute sun direction from orbit around Y axis
-		var sun_orbit_pos := Vector3(
-			sin(_sun_angle) * sun_distance,
-			0.0,
-			cos(_sun_angle) * sun_distance
-		)
-		planet.sun_direction = sun_orbit_pos.normalized()
-		# Place visual sun in the right direction, but close enough to be inside far plane
-		var visual_dist: float = planet_camera.far * 0.8
-		var visual_radius: float = visual_dist * 0.02
-		_sun_mesh.global_position = planet_camera.global_position + planet.sun_direction * visual_dist
-		_sun_mesh.mesh.radius = visual_radius
-		_sun_mesh.mesh.height = visual_radius * 2.0
-		# Rotate skybox to match sun orbit (simulates planet rotation)
-		if _world_env and _world_env.environment:
-			var sky_angle := _sun_angle - _sun_start_angle
-			_world_env.environment.sky_rotation = Vector3(0.0, sky_angle, 0.0)
+	if direction.length_squared() > 0.0: pass
+		#var offset := direction.normalized() * speed * delta
+		#planet_camera.move(offset, _collision_on)
 
 	# Update camera (origin shift, auto-level, clip planes) and planet (LOD, shaders).
 	# Must be called AFTER all movement and rotation is done this frame.
@@ -171,7 +131,7 @@ func _setup_start_view() -> void:
 
 	# Sun starts at _sun_start_angle in the XZ plane
 	# Offset camera 45° from sun direction so the terminator is visible
-	var cam_horizontal_angle := _sun_start_angle + deg_to_rad(50.0)
+	var cam_horizontal_angle = _world_env._sun_start_angle + deg_to_rad(50.0)
 	var cam_elevation := deg_to_rad(25.0)
 
 	# Spherical to cartesian (Y = up)
@@ -183,31 +143,6 @@ func _setup_start_view() -> void:
 
 	planet_camera.global_position = planet.global_position + cam_pos
 	planet_camera.look_at(planet.global_position, Vector3.UP)
-
-
-# ===========================================================================
-#  Sun (visual decoration — orbiting emissive sphere)
-# ===========================================================================
-
-func _create_sun() -> void:
-	if not planet:
-		return
-	_sun_mesh = MeshInstance3D.new()
-	_sun_mesh.name = "Sun"
-	var sphere := SphereMesh.new()
-	sphere.radius = sun_radius
-	sphere.height = sun_radius * 2.0
-	sphere.radial_segments = 16
-	sphere.rings = 8
-	_sun_mesh.mesh = sphere
-	var mat := StandardMaterial3D.new()
-	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	mat.albedo_color = Color(1.0, 0.95, 0.8)
-	mat.emission_enabled = true
-	mat.emission = Color(1.0, 0.95, 0.8)
-	mat.emission_energy_multiplier = 3.0
-	_sun_mesh.material_override = mat
-	planet_camera.add_child(_sun_mesh)
 
 
 

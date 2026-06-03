@@ -17,14 +17,16 @@ var debug_changed_visible: int = 0
 #  Configuration (@export — visible in the Godot inspector)
 # ===========================================================================
 
-## Sphere radius in km. Earth-like default.
-@export_range(100.0, 10000.0) var radius: float = 6378.0
-## Peak terrain displacement in km. Controls mountain height.
-## Maximum terrain elevation above the ideal sphere in km.
+## gravity (gravitational parameter, G const * mass, GM).
+@export var gm: float = 3.986e14
+## Sphere radius in metres. Earth-like default.
+@export_range(100000.0, 10000000.0) var radius: float = 6378000.0
+## Peak terrain displacement in metres. Controls mountain height.
+## Maximum terrain elevation above the ideal sphere in metres.
 ## Terrain ranges from 0 (ocean floor) to terrain_height (highest peak).
-@export_range(1.0, 100.0) var terrain_height: float = 16.0
-## Atmosphere height above planet surface in km.
-@export_range(110.0, 500.0) var atmosphere_height: float = 222.0
+@export_range(1000.0, 100000.0) var terrain_height: float = 16000.0
+## Atmosphere height above planet surface in metres.
+@export_range(10000.0, 500000.0) var atmosphere_height: float = 222000.0
 ## Vertices per chunk edge (actual grid is grid_size+1 × grid_size+1).
 @export var grid_size: int = 16
 ## Max chunk splits per frame. Higher = faster LOD convergence but choppier frames.
@@ -279,6 +281,7 @@ func _acquire_chunk() -> Chunk:
 
 ## Release a chunk back to the pool. Hides it immediately.
 func _release_chunk(chunk: Chunk) -> void:
+	chunk.clear_collision()
 	_free_chunks.push_back(chunk)
 
 ## Returns the total number of chunk nodes (active + free in pool).
@@ -344,6 +347,42 @@ func set_atmosphere_enabled(enabled: bool) -> void:
 #  Terrain queries
 # ===========================================================================
 
+## Walk the quadtree to find the leaf chunk whose bounding center is most
+## aligned with dir. Returns the highest-LOD built chunk available.
+## Returns null only if no root quads have finished building yet.
+func _find_leaf_chunk(dir: Vector3) -> Chunk:
+	var best: Quad = null
+	var best_dot := -INF
+	for quad in root_quads:
+		if quad.is_pending:
+			continue
+		var d := quad.bounding_center.normalized().dot(dir)
+		if d > best_dot:
+			best_dot = d
+			best = quad
+	if best == null:
+		return null
+	return _descend_to_leaf(best, dir)
+ 
+## Recursively descend into the child most aligned with dir.
+## If all children are still pending, returns the parent's chunk as fallback.
+func _descend_to_leaf(quad: Quad, dir: Vector3) -> Chunk:
+	if quad.children.is_empty():
+		return quad.chunk
+	var best: Quad = null
+	var best_dot := -INF
+	for child in quad.children:
+		if child.is_pending:
+			continue
+		var d := child.bounding_center.normalized().dot(dir)
+		if d > best_dot:
+			best_dot = d
+			best = child
+	# All children still pending — use parent chunk as best available data
+	if best == null:
+		return quad.chunk
+	return _descend_to_leaf(best, dir)
+
 ## Terrain height (in km) at a world-space position. Returns the noise-based
 ## displacement above the ideal sphere — same scale as terrain_height in inspector.
 func get_terrain_height(world_pos: Vector3) -> float:
@@ -355,7 +394,13 @@ func get_terrain_height(world_pos: Vector3) -> float:
 ## Positive = above terrain, negative = below terrain.
 func get_distance_to_terrain(world_pos: Vector3) -> float:
 	var rel_pos := world_pos - global_position
-	return rel_pos.length() - (radius + get_terrain_height(world_pos))
+	var dir := rel_pos.normalized()
+	var chunk := _find_leaf_chunk(dir)
+	if chunk != null and chunk._cached_heights.size() > 0:
+		return rel_pos.length() - (radius + chunk.sample_height(dir))
+	# Fallback: direct noise. Only hit during the first frames before any
+	# chunks finish building. After that the quadtree always has coverage.
+	return rel_pos.length() - (radius + terrain_noise.compute_noise(rel_pos) * terrain_height)
 
 # ===========================================================================
 #  Constants

@@ -13,10 +13,20 @@ extends Camera3D
 
 ## Reference to the Planet node (sibling). Set in the inspector.
 @export var planet: Planet
+@export var player: Node3D
 @export var yaw_node: Node3D
 
 ## Minimum height above terrain surface (same units as planet radius).
-@export var min_altitude: float = 0.01
+@export var min_altitude: float = 10
+
+var _shifted_nodes: Array[Node3D] = []
+
+func register_shifted_node(node: Node3D) -> void:
+	if not _shifted_nodes.has(node):
+		_shifted_nodes.append(node)
+
+func unregister_shifted_node(node: Node3D) -> void:
+	_shifted_nodes.erase(node)
 
 ## Call this once per frame AFTER moving/rotating the camera.
 ## Performs origin shifting, auto-leveling, clip plane adjustment, and
@@ -25,6 +35,17 @@ func update(_delta: float) -> void:
 	if not planet:
 		push_warning("PlanetCamera: 'planet' is not set. Assign a Planet node in the inspector.")
 		return
+	
+	# krakensbane origin shift
+	var shift := player.global_position if player else global_position
+	if shift.length_squared() > 1000.0 * 1000.0:
+		print("SHIFT: ", shift.length(), "m  planet now at: ", planet.global_position)
+		if player:
+			player.global_position = Vector3.ZERO
+		planet.global_position -= shift
+		for node in _shifted_nodes:
+			if is_instance_valid(node):
+				node.global_position -= shift
 	# Dynamically adjust near/far clip planes based on PlanetCamera altitude.
 	var surface_dist := absf(planet.get_distance_to_terrain(global_position))
 	var dist := (global_position - planet.global_position).length()
